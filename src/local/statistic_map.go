@@ -3,21 +3,21 @@ package local
 import (
 	"bytes"
 	"encoding/gob"
-	"fmt"
 	"math/rand"
 	"net"
 	"sync"
 
 	"common"
-	"common/semaphore"
+	"common/cache"
 )
 
 type remoteAddr struct {
 	rawAddr []byte
-	addr    string
 }
 
 var (
+	// statistics collections contains all remote servers statistics
+	statistics                = NewStatisticWrapper()
 	remoteAddresses           []remoteAddr
 	oneResolveRemoteAddresses sync.Once
 )
@@ -25,9 +25,16 @@ var (
 func resolvServer(bi *BackendInfo) {
 	host, _, _ := net.SplitHostPort(bi.address)
 	if ips, err := net.LookupIP(host); err == nil {
-		Backends.Lock()
+		backends.Lock()
 		bi.ips = ips
-		Backends.Unlock()
+		bi.ipv6 = false
+		for _, ip := range ips {
+			if ip.To4() == nil {
+				bi.ipv6 = true
+				break
+			}
+		}
+		backends.Unlock()
 	}
 }
 
@@ -44,10 +51,10 @@ func NewStatisticWrapper() *StatisticWrapper {
 	return sw
 }
 
-func (m *StatisticWrapper) Get(si *BackendInfo) (s *common.Statistic, ok bool) {
+func (m *StatisticWrapper) Get(bi *BackendInfo) (s *common.Statistic, ok bool) {
 	m.RLock()
 	defer m.RUnlock()
-	s, ok = m.StatisticMap[si]
+	s, ok = m.StatisticMap[bi]
 	return s, ok
 }
 
@@ -81,10 +88,9 @@ func (m *StatisticWrapper) UpdateBps() {
 
 func (m *StatisticWrapper) UpdateLatency() {
 	var rawAddr []byte
-	var addr string
 	if len(remoteAddresses) == 0 {
+		// addr = "104.28.31.28:443"
 		rawAddr = []byte{1, 104, 28, 31, 28, 1, 187}
-		addr = "104.28.31.28:443"
 		oneResolveRemoteAddresses.Do(func() {
 			go func() {
 				remotes := []string{
@@ -107,7 +113,6 @@ func (m *StatisticWrapper) UpdateLatency() {
 						ipv4 := []byte(ip.To4())
 						ra := remoteAddr{
 							[]byte{1, ipv4[0], ipv4[1], ipv4[2], ipv4[3], 1, 187},
-							fmt.Sprintf("%d.%d.%d.%d:443", ipv4[0], ipv4[1], ipv4[2], ipv4[3]),
 						}
 						remoteAddresses = append(remoteAddresses, ra)
 					}
@@ -117,25 +122,26 @@ func (m *StatisticWrapper) UpdateLatency() {
 	} else {
 		index := rand.Intn(len(remoteAddresses))
 		rawAddr = remoteAddresses[index].rawAddr
-		addr = remoteAddresses[index].addr
 	}
-	var wg sync.WaitGroup
-	sem := semaphore.New(5)
+
 	m.RLock()
-	wg.Add(len(m.StatisticMap))
-	for si := range m.StatisticMap {
-		go si.testLatency(rawAddr, addr, &wg, sem)
+	for bi := range m.StatisticMap {
+		go bi.testLatency(rawAddr)
 	}
 	m.RUnlock()
-	wg.Wait()
+
 	m.SaveToRedis()
 }
 
-func (m *StatisticWrapper) LoadFromRedis() {
+func (m *StatisticWrapper) LoadFromCache() {
 	m.Lock()
 	defer m.Unlock()
 	for server, stat := range m.StatisticMap {
-		statistic, _ := common.Rd.Get(server.address)
+		statistic, _ := cache.Instance.Get(server.address)
+		if statistic == nil {
+			common.Info("no cache item for", server.address)
+			continue
+		}
 		b, ok := statistic.([]byte)
 		if !ok {
 			common.Error("to []byte failed")
@@ -147,6 +153,7 @@ func (m *StatisticWrapper) LoadFromRedis() {
 		var s Stat
 		if err := decoder.Decode(&s); err != nil {
 			common.Error("to Stat failed")
+			continue
 		}
 		if len(s.Id) == 0 {
 			s.Id = common.GenerateRandomString(4)
@@ -165,7 +172,11 @@ func (m *StatisticWrapper) LoadFromRedis() {
 		stat.SetLastSecondBps(s.LastSecondBps)
 		stat.SetLastTenMinutesBps(s.LastTenMinutesBps)
 	}
-	totalDownload, _ := common.Rd.Get("totaldownload")
+	totalDownload, _ := cache.Instance.Get("totaldownload")
+	if totalDownload == nil {
+		common.Info("no cache item for total download")
+		return
+	}
 	rawb, ok := totalDownload.([]byte)
 	if !ok {
 		common.Error("total download to []byte failed")
@@ -181,7 +192,11 @@ func (m *StatisticWrapper) LoadFromRedis() {
 	}
 	common.TotalStat.SetDownload(b)
 
-	totalUpload, _ := common.Rd.Get("totalupload")
+	totalUpload, _ := cache.Instance.Get("totalupload")
+	if totalUpload == nil {
+		common.Info("no cache item for total upload")
+		return
+	}
 	rawu, ok := totalUpload.([]byte)
 	if !ok {
 		common.Error("total upload to []byte failed")
@@ -203,27 +218,33 @@ func (m *StatisticWrapper) SaveToRedis() {
 	defer m.RUnlock()
 	for server, stat := range m.StatisticMap {
 		s := Stat{
-			Id:                       server.id,
-			Address:                  server.address,
-			FailedCount:              stat.GetFailedCount(),
-			Latency:                  stat.GetLatency(),
-			TotalDownload:            stat.GetTotalDownload(),
-			TotalUpload:              stat.GetTotalUploaded(),
-			HighestLastHourBps:       stat.GetHighestLastHourBps(),
-			HighestLastTenMinutesBps: stat.GetHighestLastTenMinutesBps(),
-			HighestLastMinuteBps:     stat.GetHighestLastMinuteBps(),
-			HighestLastSecondBps:     stat.GetHighestLastSecondBps(),
-			LastHourBps:              stat.GetLastHourBps(),
-			LastTenMinutesBps:        stat.GetLastTenMinutesBps(),
-			LastMinuteBps:            stat.GetLastMinuteBps(),
-			LastSecondBps:            stat.GetLastSecondBps(),
+			Id:          server.id,
+			Address:     server.address,
+			FailedCount: stat.GetFailedCount(),
+			Latency:     stat.GetLatency(),
+			totalStat: totalStat{
+				TotalDownload: stat.GetTotalDownload(),
+				TotalUpload:   stat.GetTotalUploaded(),
+			},
+			highestStat: highestStat{
+				HighestLastHourBps:       stat.GetHighestLastHourBps(),
+				HighestLastTenMinutesBps: stat.GetHighestLastTenMinutesBps(),
+				HighestLastMinuteBps:     stat.GetHighestLastMinuteBps(),
+				HighestLastSecondBps:     stat.GetHighestLastSecondBps(),
+			},
+			lastStat: lastStat{
+				LastHourBps:       stat.GetLastHourBps(),
+				LastTenMinutesBps: stat.GetLastTenMinutesBps(),
+				LastMinuteBps:     stat.GetLastMinuteBps(),
+				LastSecondBps:     stat.GetLastSecondBps(),
+			},
 		}
 		var buf bytes.Buffer
 		encoder := gob.NewEncoder(&buf)
 		if err := encoder.Encode(s); err != nil {
 			continue
 		}
-		common.Rd.Put(server.address, interface{}(buf.Bytes()))
+		cache.Instance.Put(server.address, interface{}(buf.Bytes()))
 	}
 	var bufDownload bytes.Buffer
 	encoderDownload := gob.NewEncoder(&bufDownload)
@@ -231,7 +252,7 @@ func (m *StatisticWrapper) SaveToRedis() {
 		common.Error("encoding total download failed", err)
 		return
 	}
-	common.Rd.Put("totaldownload", interface{}(bufDownload.Bytes()))
+	cache.Instance.Put("totaldownload", interface{}(bufDownload.Bytes()))
 
 	var bufUpload bytes.Buffer
 	encoderUpload := gob.NewEncoder(&bufUpload)
@@ -239,5 +260,5 @@ func (m *StatisticWrapper) SaveToRedis() {
 		common.Error("encoding total upload failed", err)
 		return
 	}
-	common.Rd.Put("totalupload", interface{}(bufUpload.Bytes()))
+	cache.Instance.Put("totalupload", interface{}(bufUpload.Bytes()))
 }

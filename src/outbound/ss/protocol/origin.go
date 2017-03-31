@@ -1,38 +1,42 @@
 package protocol
 
 import (
-	"common"
+	"outbound/ss/ssr"
 )
 
-type Origin struct {
-	common.ServerInfoForObfs
+func init() {
+	register("origin", newOrigin)
 }
 
-func NewOrigin() *Origin {
-	a := &Origin{}
+type origin struct {
+	ssr.ServerInfoForObfs
+}
+
+func newOrigin() IProtocol {
+	a := &origin{}
 	return a
 }
 
-func (o *Origin) SetServerInfo(s *common.ServerInfoForObfs) {
+func (o *origin) SetServerInfo(s *ssr.ServerInfoForObfs) {
 	o.ServerInfoForObfs = *s
 }
 
-func (o *Origin) GetServerInfo() (s *common.ServerInfoForObfs) {
+func (o *origin) GetServerInfo() (s *ssr.ServerInfoForObfs) {
 	return &o.ServerInfoForObfs
 }
 
-func (o *Origin) PreEncrypt(data []byte) (encryptedData []byte, err error) {
+func (o *origin) PreEncrypt(data []byte) (encryptedData []byte, err error) {
 	return data, nil
 }
 
-func (o *Origin) PostDecrypt(data []byte) (decryptedData []byte, err error) {
+func (o *origin) PostDecrypt(data []byte) (decryptedData []byte, err error) {
 	return data, nil
 }
 
-func (o *Origin) SetData(data interface{}) {
+func (o *origin) SetData(data interface{}) {
 
 }
 
-func (o *Origin) GetData() interface{} {
+func (o *origin) GetData() interface{} {
 	return nil
 }

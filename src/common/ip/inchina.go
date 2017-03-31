@@ -2,7 +2,6 @@ package ip
 
 import (
 	"bufio"
-	"common"
 	"math"
 	"net"
 	"os"
@@ -10,11 +9,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"common"
+	"common/fs"
+	"common/netutil"
 )
 
-const (
-	apnic = "http://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest"
-)
+const apnic = "https://yii.li/apnic"
 
 type ipField struct {
 	mask byte
@@ -75,14 +76,14 @@ func InChina(ip string) bool {
 
 // LoadChinaIPList loads china IP list from file
 func LoadChinaIPList(forceDownload bool) {
-	apnicFile, err := common.GetConfigPath("apnic.txt")
+	apnicFile, err := fs.GetConfigPath("apnic.txt")
 	if err != nil {
 		apnicFile = "apnic.txt"
 	}
 	if err != nil || forceDownload {
 		for err = os.ErrNotExist; err != nil; time.Sleep(5 * time.Second) {
 			common.Warning(apnicFile, "not found, try to download from", apnic)
-			err = common.DownloadRemoteFile(apnic, apnicFile)
+			err = netutil.DownloadRemoteFile(apnic, apnicFile)
 		}
 
 		common.Debug(apnic, "is downloaded")

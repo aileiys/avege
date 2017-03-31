@@ -3,39 +3,43 @@ package obfs
 import (
 	"math/rand"
 
-	"common"
+	"outbound/ss/ssr"
 )
 
-type RandomHead struct {
-	common.ServerInfoForObfs
+type randomHead struct {
+	ssr.ServerInfoForObfs
 	rawTransSent     bool
 	rawTransReceived bool
 	hasSentHeader    bool
 	dataBuffer       []byte
 }
 
-func NewRandomHead() *RandomHead {
-	p := &RandomHead{}
+func init() {
+	register("random_head", newRandomHead)
+}
+
+func newRandomHead() IObfs {
+	p := &randomHead{}
 	return p
 }
 
-func (r *RandomHead) SetServerInfo(s *common.ServerInfoForObfs) {
+func (r *randomHead) SetServerInfo(s *ssr.ServerInfoForObfs) {
 	r.ServerInfoForObfs = *s
 }
 
-func (r *RandomHead) GetServerInfo() (s *common.ServerInfoForObfs) {
+func (r *randomHead) GetServerInfo() (s *ssr.ServerInfoForObfs) {
 	return &r.ServerInfoForObfs
 }
 
-func (r *RandomHead) SetData(data interface{}) {
+func (r *randomHead) SetData(data interface{}) {
 
 }
 
-func (r *RandomHead) GetData() interface{} {
+func (r *randomHead) GetData() interface{} {
 	return nil
 }
 
-func (r *RandomHead) Encode(data []byte) (encodedData []byte, err error) {
+func (r *randomHead) Encode(data []byte) (encodedData []byte, err error) {
 	if r.rawTransSent {
 		return data, nil
 	}
@@ -43,7 +47,7 @@ func (r *RandomHead) Encode(data []byte) (encodedData []byte, err error) {
 	dataLength := len(data)
 	if r.hasSentHeader {
 		if dataLength > 0 {
-			d := make([]byte, len(r.dataBuffer) + dataLength)
+			d := make([]byte, len(r.dataBuffer)+dataLength)
 			copy(d, r.dataBuffer)
 			copy(d[len(r.dataBuffer):], data)
 			r.dataBuffer = d
@@ -56,7 +60,7 @@ func (r *RandomHead) Encode(data []byte) (encodedData []byte, err error) {
 		size := rand.Intn(96) + 8
 		encodedData = make([]byte, size)
 		rand.Read(encodedData)
-		common.SetCRC32(encodedData, size)
+		ssr.SetCRC32(encodedData, size)
 
 		d := make([]byte, dataLength)
 		copy(d, data)
@@ -66,7 +70,7 @@ func (r *RandomHead) Encode(data []byte) (encodedData []byte, err error) {
 	return
 }
 
-func (r *RandomHead) Decode(data []byte) (decodedData []byte, needSendBack bool, err error) {
+func (r *randomHead) Decode(data []byte) (decodedData []byte, needSendBack bool, err error) {
 	if r.rawTransReceived {
 		return data, false, nil
 	}
